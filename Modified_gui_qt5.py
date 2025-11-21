@@ -7,6 +7,7 @@ from Modified_Comport_discovery import Comport
 from Ethernetport_discovery import find_xbee_and_waveshare_devices
 import time
 import re
+import os
 from PyQt5.QtGui import QPixmap
 
 
@@ -93,16 +94,24 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(title, alignment=Qt.AlignLeft)
 
         try:
-            from PyQt5.QtGui import QPixmap
             logo = QLabel()
-            pixmap = QPixmap("D:\python\serial_port\LoadVUE-Twelve-Channel\static\logo.png")  # adjust path if needed
-            if not pixmap.isNull():
-                logo.setPixmap(pixmap.scaledToHeight(60))
-                header_layout.addWidget(logo, alignment=Qt.AlignRight)
+            # Try to load logo from static directory relative to script location
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            logo_path = os.path.join(script_dir, "static", "logo.png")
+            
+            if os.path.exists(logo_path):
+                pixmap = QPixmap(logo_path)
+                if not pixmap.isNull():
+                    logo.setPixmap(pixmap.scaledToHeight(60))
+                    header_layout.addWidget(logo, alignment=Qt.AlignRight)
+                else:
+                    print("Logo file found but could not be loaded")
             else:
-                print("Logo file not found or is null")
+                # Logo not found, but don't show error - it's optional
+                pass
         except Exception as e:
-            print("Logo not loaded:", e)
+            # Logo is optional, so just silently skip if there's an error
+            pass
 
         self.layout.addLayout(header_layout)
         self.central.setLayout(self.layout)
