@@ -222,22 +222,47 @@ class MainWindow(QMainWindow):
                         continue
                     try:
                         parsed, extras = self.parse_serial_message_as_dict(resp)
-                        if parsed and parsed.get("SID"):
+                        if parsed:
                             # Extract port number from response
                             port_num = None
                             if 'P' in parsed:
                                 port_num = int(parsed['P'])
                             else:
-                                # Try to extract from response string
+                                # Try to extract from response string (format: .S01, .S02, etc.)
                                 port_match = re.search(r'\.S(\d+)', resp)
                                 if port_match:
                                     port_num = int(port_match.group(1))
                             
-                            if port_num and port_num not in active_channels:
+                            # A channel is considered active if:
+                            # 1. It has a Sensor ID (SID) - indicates a sensor is connected
+                            # 2. OR it has a Port number (P) and Status (ST) - ST:1 means active, ST:0 means inactive
+                            # 3. OR it has a Port number and any valid data (CID, etc.)
+                            is_active = False
+                            if parsed.get("SID"):
+                                # Has Sensor ID - definitely active
+                                is_active = True
+                            elif port_num is not None:
+                                # Has port number - check status if available
+                                st_value = parsed.get("ST")
+                                if st_value == "1":
+                                    # Status is 1 - active
+                                    is_active = True
+                                elif st_value == "0":
+                                    # Status is 0 - inactive, but still show it (sensor might be connected but not ready)
+                                    # We'll include it but mark it as inactive
+                                    is_active = True  # Include it so user can see it
+                                elif parsed.get("CID") or parsed.get("SID"):
+                                    # Has CID or other data - consider it active
+                                    is_active = True
+                            
+                            if is_active and port_num and port_num not in active_channels:
                                 active_channels.append(port_num)
-                                print(f"[{port}] Found active channel P{port_num}")
+                                st_status = parsed.get("ST", "?")
+                                print(f"[{port}] Found channel P{port_num} (ST={st_status})")
                     except Exception as e:
                         print(f"[{port}] Error parsing SNM response '{resp[:50]}...': {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 # Sort active channels
                 active_channels.sort()
@@ -259,7 +284,7 @@ class MainWindow(QMainWindow):
             active_channels = list(range(1, 2))
         '''
         if not active_channels:
-            print(f"[INFO] {port}: no channels with ST == 1, skipping rows.")
+            print(f"[INFO] {port}: no active channels found (no SID or all ST=0). Showing 'NO SENSORS ATTACHED' message.")
             # You can return here OR still show headers with no channels if you prefer
             cid_label = QLabel(f"CID: {cid}")
             cid_label.setStyleSheet("background-color: #eee")

@@ -39,3 +39,6 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Documentation
+SC1200-ETH-User-Manul.pdf
+
