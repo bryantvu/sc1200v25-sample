@@ -421,18 +421,18 @@ class MainWindow(QMainWindow):
                                 if port_num in channels or not isinstance(channels, range):
                                     self.update_sensor_row(port, port_num, parsed, extras)
                                     print(f"[{port}] Updated P{port_num} with {command} data")
-                        else:
-                            # Try to extract port number from response string if not in parsed dict
-                            # Some commands might have port info in the response string
-                            port_match = re.search(r'\.S(\d+)', response)
-                            if port_match:
-                                port_num = int(port_match.group(1))
-                                if port_num in channels or not isinstance(channels, range):
-                                    # Create a minimal parsed dict for update
-                                    parsed = parsed or {}
-                                    parsed['P'] = str(port_num)
-                                    self.update_sensor_row(port, port_num, parsed, extras)
-                                    print(f"[{port}] Updated P{port_num} from response string")
+                            else:
+                                # Try to extract port number from response string if not in parsed dict
+                                # Some commands might have port info in the response string
+                                port_match = re.search(r'\.S(\d+)', response)
+                                if port_match:
+                                    port_num = int(port_match.group(1))
+                                    if port_num in channels or not isinstance(channels, range):
+                                        # Create a minimal parsed dict for update
+                                        parsed = parsed or {}
+                                        parsed['P'] = str(port_num)
+                                        self.update_sensor_row(port, port_num, parsed, extras)
+                                        print(f"[{port}] Updated P{port_num} from response string")
                     except Exception as e:
                         print(f"[{port}] Error parsing response '{response[:50]}...': {e}")
                 
