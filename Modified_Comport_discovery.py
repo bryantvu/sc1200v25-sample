@@ -107,9 +107,9 @@ class Comport:
         Reads multiple responses from the serial port until timeout or max responses reached.
         
         Args:
-            timeout_seconds: Maximum time to wait for responses (default 3.0 seconds)
+            timeout_seconds: Maximum time to wait for responses (default 5.0 seconds)
             max_responses: Maximum number of responses to collect (default 12 for SC1200 ports)
-            response_gap: Time in seconds with no new responses before considering complete (default 0.3)
+            response_gap: Time in seconds with no new responses before considering complete (default 0.5)
         
         Returns:
             List of response strings, excluding invalid responses
@@ -123,56 +123,59 @@ class Comport:
         
         print(f"[DEBUG] Starting multi-response read (timeout={timeout_seconds}s, max={max_responses})")
         
-        while True:
-            current_time = time.time()
-            elapsed = current_time - start_time
-            
-            # Check if we've exceeded the timeout
-            if elapsed >= timeout_seconds:
-                print(f"[DEBUG] Timeout reached after {elapsed:.2f}s, collected {len(responses)} responses")
-                break
-            
-            # Check if we've reached max responses
-            if len(responses) >= max_responses:
-                print(f"[DEBUG] Max responses ({max_responses}) reached")
-                break
-            
-            # Check if we've had a gap with no new responses (adaptive completion)
-            if last_response_time is not None:
-                gap = current_time - last_response_time
-                if gap >= response_gap:
-                    print(f"[DEBUG] Response gap of {gap:.2f}s detected, collected {len(responses)} responses")
+        # Save original timeout and set a reasonable timeout for reading
+        original_timeout = self.serialport.timeout
+        self.serialport.timeout = 0.2  # 200ms timeout per readline call
+        
+        try:
+            while True:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                # Check if we've exceeded the timeout
+                if elapsed >= timeout_seconds:
+                    print(f"[DEBUG] Timeout reached after {elapsed:.2f}s, collected {len(responses)} responses")
                     break
-            
-            # Try to read a line (non-blocking with timeout)
-            try:
-                # Set a short timeout for individual reads
-                original_timeout = self.serialport.timeout
-                self.serialport.timeout = 0.1  # Short timeout for non-blocking check
                 
-                line = self.serialport.readline()
+                # Check if we've reached max responses
+                if len(responses) >= max_responses:
+                    print(f"[DEBUG] Max responses ({max_responses}) reached")
+                    break
                 
-                # Restore original timeout
-                self.serialport.timeout = original_timeout
+                # Check if we've had a gap with no new responses (adaptive completion)
+                if last_response_time is not None:
+                    gap = current_time - last_response_time
+                    if gap >= response_gap:
+                        print(f"[DEBUG] Response gap of {gap:.2f}s detected, collected {len(responses)} responses")
+                        break
                 
-                if line:
-                    try:
-                        response = line.decode("utf-8").strip()
-                        if response and not self._invalid_data(response):
-                            responses.append(response)
-                            last_response_time = current_time
-                            print(f"[DEBUG] Collected response {len(responses)}: {response[:50]}...")
-                        else:
-                            print(f"[DEBUG] Skipped invalid response: {response}")
-                    except UnicodeDecodeError:
-                        print(f"[DEBUG] Skipped non-UTF8 response")
-                else:
-                    # No data available, sleep briefly to avoid CPU spinning
-                    time.sleep(0.01)
+                # Try to read a line
+                try:
+                    line = self.serialport.readline()
                     
-            except Exception as e:
-                print(f"[DEBUG] Error reading response: {e}")
-                time.sleep(0.01)
+                    if line:
+                        try:
+                            response = line.decode("utf-8", errors='ignore').strip()
+                            if response:
+                                # Check if it's invalid data (but allow longer error messages)
+                                if len(response) > 1 or response not in INVALID_DATA:
+                                    responses.append(response)
+                                    last_response_time = current_time
+                                    print(f"[DEBUG] Collected response {len(responses)}: {response[:80]}")
+                                else:
+                                    print(f"[DEBUG] Skipped single-char invalid response: '{response}'")
+                        except UnicodeDecodeError as e:
+                            print(f"[DEBUG] Skipped non-UTF8 response: {e}")
+                    else:
+                        # No data available, sleep briefly to avoid CPU spinning
+                        time.sleep(0.05)
+                        
+                except Exception as e:
+                    print(f"[DEBUG] Error reading response: {e}")
+                    time.sleep(0.05)
+        finally:
+            # Restore original timeout
+            self.serialport.timeout = original_timeout
         
         print(f"[DEBUG] Multi-response read complete: {len(responses)} valid responses")
         return responses
@@ -236,8 +239,9 @@ class Comport:
             List of response strings
         """
         if self.serialport and self.serialport.is_open:
+            # Clear any pending data before sending new commands
             self.serialport.reset_input_buffer()
-            time.sleep(0.01)
+            time.sleep(0.05)  # Give buffer time to clear
         
         # SC1200 requires port numbers in commands, so send to all 12 ports in quick succession
         # Send all commands first without waiting for responses
@@ -245,7 +249,10 @@ class Comport:
         for port_num in range(1, 13):
             port_command = f"{command} P{port_num} "
             self._send_command(port_command)
-            time.sleep(0.01)  # Small delay between commands to avoid overwhelming the device
+            time.sleep(0.02)  # Small delay between commands to avoid overwhelming the device
+        
+        # Wait a bit for device to start processing commands before reading responses
+        time.sleep(0.1)
         
         # Now read all responses that come back
         print(f"[DEBUG] Reading responses from all ports...")
