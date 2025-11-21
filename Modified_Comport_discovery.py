@@ -228,10 +228,11 @@ class Comport:
     def _send_command_get_multiple_responses(self, command: str, max_responses: int = 12, timeout_seconds: float = 5.0) -> list:
         """
         Sends a command to all ports and gets all responses (for SC1200 multi-port commands).
-        For SC1200, commands must include port numbers, so we send to all 12 ports in quick succession.
+        For SC1200, some commands support <ALL> format which returns all ports at once.
+        Otherwise, we send to all 12 ports in quick succession.
         
         Args:
-            command: Command base (e.g., "SNM", "WGHT", "SINF") - port numbers will be added
+            command: Command base (e.g., "SNM", "WGHT", "SINF") - port numbers or <ALL> will be added
             max_responses: Maximum number of responses to read (default 12 for SC1200 ports)
             timeout_seconds: Maximum time to wait for responses
         
@@ -243,20 +244,32 @@ class Comport:
             self.serialport.reset_input_buffer()
             time.sleep(0.05)  # Give buffer time to clear
         
-        # SC1200 requires port numbers in commands, so send to all 12 ports in quick succession
-        # Send all commands first without waiting for responses
-        print(f"[DEBUG] Sending {command} command to all 12 ports...")
-        for port_num in range(1, 13):
-            port_command = f"{command} P{port_num} "
-            self._send_command(port_command)
-            time.sleep(0.15)  # Increased delay between commands to allow device to process each command
+        # Commands that support <ALL> format: SNM, WGHT, SINF, TYPE, SATT, TARE, WLB, RAW, UNIT, CPTY, SLC
+        all_supported_commands = ['SNM', 'WGHT', 'SINF', 'TYPE', 'SATT', 'TARE', 'WLB', 'RAW', 'UNIT', 'CPTY', 'SLC']
         
-        # Wait a bit for device to finish processing all commands before reading responses
-        time.sleep(0.2)
-        
-        # Now read all responses that come back
-        print(f"[DEBUG] Reading responses from all ports...")
-        return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
+        if command.upper() in all_supported_commands:
+            # Try using <ALL> format first - this should return all ports in one command
+            print(f"[DEBUG] Sending {command} <ALL> command (expecting multiple responses)...")
+            all_command = f"{command} <ALL>"
+            self._send_command(all_command)
+            # Wait for device to process and send all responses
+            time.sleep(0.5)
+            print(f"[DEBUG] Reading responses from all ports...")
+            return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
+        else:
+            # For commands that don't support <ALL>, send to all 12 ports in quick succession
+            print(f"[DEBUG] Sending {command} command to all 12 ports...")
+            for port_num in range(1, 13):
+                port_command = f"{command} P{port_num} "
+                self._send_command(port_command)
+                time.sleep(0.3)  # Increased delay between commands to allow device to process each command
+            
+            # Wait a bit for device to finish processing all commands before reading responses
+            time.sleep(0.3)
+            
+            # Now read all responses that come back
+            print(f"[DEBUG] Reading responses from all ports...")
+            return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
     
     def _set_baudrate(self):
         """
