@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from Modified_Comport_discovery import Comport
 from Ethernetport_discovery import find_xbee_and_waveshare_devices
 import time
+import re
 from PyQt5.QtGui import QPixmap
 
 
@@ -204,14 +205,54 @@ class MainWindow(QMainWindow):
             get_snm = None
 
         if get_snm:
-            for ch in range(1, 13):
-                try:
-                    resp = get_snm(ch)          # send "SNM P<ch> "
-                    parsed, extras = self.parse_serial_message_as_dict(resp)
-                    if parsed and parsed.get("SID"):
-                        active_channels.append(ch)
-                except Exception as e:
-                    print(f"[{port} P{ch}] SNM error: {e}")
+            # Try broadcast first to get all port responses at once
+            try:
+                print(f"[{port}] Sending broadcast SNM command for channel discovery...")
+                responses = get_snm(portnum=None, broadcast=True)
+                
+                # Handle both single response (backward compatibility) and list of responses
+                if not isinstance(responses, list):
+                    responses = [responses] if responses else []
+                
+                print(f"[{port}] Received {len(responses)} SNM responses")
+                
+                # Parse all responses to find active channels
+                for resp in responses:
+                    if not resp or resp == "--":
+                        continue
+                    try:
+                        parsed, extras = self.parse_serial_message_as_dict(resp)
+                        if parsed and parsed.get("SID"):
+                            # Extract port number from response
+                            port_num = None
+                            if 'P' in parsed:
+                                port_num = int(parsed['P'])
+                            else:
+                                # Try to extract from response string
+                                port_match = re.search(r'\.S(\d+)', resp)
+                                if port_match:
+                                    port_num = int(port_match.group(1))
+                            
+                            if port_num and port_num not in active_channels:
+                                active_channels.append(port_num)
+                                print(f"[{port}] Found active channel P{port_num}")
+                    except Exception as e:
+                        print(f"[{port}] Error parsing SNM response '{resp[:50]}...': {e}")
+                
+                # Sort active channels
+                active_channels.sort()
+                
+            except Exception as e:
+                print(f"[{port}] Broadcast SNM failed, falling back to per-port scan: {e}")
+                # Fallback to per-port scan if broadcast doesn't work
+                for ch in range(1, 13):
+                    try:
+                        resp = get_snm(ch)          # send "SNM P<ch> "
+                        parsed, extras = self.parse_serial_message_as_dict(resp)
+                        if parsed and parsed.get("SID"):
+                            active_channels.append(ch)
+                    except Exception as e2:
+                        print(f"[{port} P{ch}] SNM error: {e2}")
         '''
         else:
             # Fallback: if get_snm() doesn't exist, keep old behavior (all 12)
@@ -295,21 +336,58 @@ class MainWindow(QMainWindow):
     def send_command(self, command):
         print(f"[COMMAND] {command} triggered")
         for port, sensor in self.sensor_objects.items():
-            # Only channels marked ST == '1' during SNM scan
+            # Get active channels for this port
             channels = self.active_channels.get(port, range(1, 13))
-
-            for ch in channels:
-                try:
-                    func = getattr(sensor, f"get_{command.lower()}", None)
-                    if not func:
+            
+            try:
+                func = getattr(sensor, f"get_{command.lower()}", None)
+                if not func:
+                    print(f"[{port}] No function found for get_{command.lower()}")
+                    continue
+                
+                # Send broadcast command to get all port responses at once
+                # For SC1200, broadcast commands return responses from all 12 ports
+                print(f"[{port}] Sending broadcast {command} command...")
+                responses = func(portnum=None, broadcast=True)
+                
+                # Handle both single response (backward compatibility) and list of responses
+                if not isinstance(responses, list):
+                    responses = [responses] if responses else []
+                
+                print(f"[{port}] Received {len(responses)} responses for {command}")
+                
+                # Parse and update each response
+                for response in responses:
+                    if not response or response == "--":
                         continue
-                    response = func(ch)
-                    parsed, extras = self.parse_serial_message_as_dict(response)
-                    if parsed and 'P' in parsed:
-                        self.update_sensor_row(port, int(parsed['P']), parsed, extras)
-                except Exception as e:
-                    print(f"[{port} P{ch}] {command} error: {e}")
-                time.sleep(1)
+                    
+                    try:
+                        parsed, extras = self.parse_serial_message_as_dict(response)
+                        if parsed and 'P' in parsed:
+                            port_num = int(parsed['P'])
+                            # Only update if this port is in the active channels
+                            if port_num in channels or not isinstance(channels, range):
+                                self.update_sensor_row(port, port_num, parsed, extras)
+                                print(f"[{port}] Updated P{port_num} with {command} data")
+                        else:
+                            # Try to extract port number from response string if not in parsed dict
+                            # Some commands might have port info in the response string
+                            port_match = re.search(r'\.S(\d+)', response)
+                            if port_match:
+                                port_num = int(port_match.group(1))
+                                if port_num in channels or not isinstance(channels, range):
+                                    # Create a minimal parsed dict for update
+                                    parsed = parsed or {}
+                                    parsed['P'] = str(port_num)
+                                    self.update_sensor_row(port, port_num, parsed, extras)
+                                    print(f"[{port}] Updated P{port_num} from response string")
+                    except Exception as e:
+                        print(f"[{port}] Error parsing response '{response[:50]}...': {e}")
+                
+            except Exception as e:
+                print(f"[{port}] {command} error: {e}")
+                import traceback
+                traceback.print_exc()
 
     def update_sensor_row(self, port, ch, data, extras):
         row_cells = self.sensor_cells.get((port, ch))

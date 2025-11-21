@@ -101,6 +101,81 @@ class Comport:
             return response
         else:
             raise SerialNotOpenException("Failed to read line: port not open")
+
+    def _read_multiple_responses(self, timeout_seconds=3.0, max_responses=12, response_gap=0.3) -> list:
+        """
+        Reads multiple responses from the serial port until timeout or max responses reached.
+        
+        Args:
+            timeout_seconds: Maximum time to wait for responses (default 3.0 seconds)
+            max_responses: Maximum number of responses to collect (default 12 for SC1200 ports)
+            response_gap: Time in seconds with no new responses before considering complete (default 0.3)
+        
+        Returns:
+            List of response strings, excluding invalid responses
+        """
+        if not self.serialport.is_open:
+            raise SerialNotOpenException("Failed to read responses: port not open")
+        
+        responses = []
+        start_time = time.time()
+        last_response_time = None
+        
+        print(f"[DEBUG] Starting multi-response read (timeout={timeout_seconds}s, max={max_responses})")
+        
+        while True:
+            current_time = time.time()
+            elapsed = current_time - start_time
+            
+            # Check if we've exceeded the timeout
+            if elapsed >= timeout_seconds:
+                print(f"[DEBUG] Timeout reached after {elapsed:.2f}s, collected {len(responses)} responses")
+                break
+            
+            # Check if we've reached max responses
+            if len(responses) >= max_responses:
+                print(f"[DEBUG] Max responses ({max_responses}) reached")
+                break
+            
+            # Check if we've had a gap with no new responses (adaptive completion)
+            if last_response_time is not None:
+                gap = current_time - last_response_time
+                if gap >= response_gap:
+                    print(f"[DEBUG] Response gap of {gap:.2f}s detected, collected {len(responses)} responses")
+                    break
+            
+            # Try to read a line (non-blocking with timeout)
+            try:
+                # Set a short timeout for individual reads
+                original_timeout = self.serialport.timeout
+                self.serialport.timeout = 0.1  # Short timeout for non-blocking check
+                
+                line = self.serialport.readline()
+                
+                # Restore original timeout
+                self.serialport.timeout = original_timeout
+                
+                if line:
+                    try:
+                        response = line.decode("utf-8").strip()
+                        if response and not self._invalid_data(response):
+                            responses.append(response)
+                            last_response_time = current_time
+                            print(f"[DEBUG] Collected response {len(responses)}: {response[:50]}...")
+                        else:
+                            print(f"[DEBUG] Skipped invalid response: {response}")
+                    except UnicodeDecodeError:
+                        print(f"[DEBUG] Skipped non-UTF8 response")
+                else:
+                    # No data available, sleep briefly to avoid CPU spinning
+                    time.sleep(0.01)
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error reading response: {e}")
+                time.sleep(0.01)
+        
+        print(f"[DEBUG] Multi-response read complete: {len(responses)} valid responses")
+        return responses
         
     def _read_byte(self, num_of_bytes) -> bytes:
         if self.serialport.is_open:
@@ -115,18 +190,56 @@ class Comport:
             raise SerialNotOpenException("Failed to read byte: port not open")
 
 
-    def _send_command_get_response(self, command: str, default_response: str) -> str:
+    def _send_command_get_response(self, command: str, default_response: str, multi_response: bool = False, max_responses: int = 12) -> str:
+        """
+        Sends a command and gets response(s).
+        
+        Args:
+            command: Command string to send
+            default_response: Default response if invalid or no response
+            multi_response: If True, read multiple responses (for SC1200 multi-port commands)
+            max_responses: Maximum number of responses to read when multi_response=True
+        
+        Returns:
+            Single response string if multi_response=False, or first valid response if multi_response=True
+            (Note: For multi-response, use _send_command_get_multiple_responses() instead)
+        """
         '''
         if self.serialport and self.serialport.is_open:
             self.serialport.reset_input_buffer()
             time.sleep(0.01)
         '''
         self._send_command(command)
-        response = self._read_line()
-        if self._invalid_data(response):
-            print(f"[DEBUG] Invalid response")
+        if multi_response:
+            responses = self._read_multiple_responses(max_responses=max_responses)
+            if responses:
+                return responses[0]  # Return first response for backward compatibility
             return default_response
-        return response
+        else:
+            response = self._read_line()
+            if self._invalid_data(response):
+                print(f"[DEBUG] Invalid response")
+                return default_response
+            return response
+
+    def _send_command_get_multiple_responses(self, command: str, max_responses: int = 12, timeout_seconds: float = 3.0) -> list:
+        """
+        Sends a command and gets all responses (for SC1200 multi-port commands).
+        
+        Args:
+            command: Command string to send
+            max_responses: Maximum number of responses to read (default 12 for SC1200 ports)
+            timeout_seconds: Maximum time to wait for responses
+        
+        Returns:
+            List of response strings
+        """
+        if self.serialport and self.serialport.is_open:
+            self.serialport.reset_input_buffer()
+            time.sleep(0.01)
+        
+        self._send_command(command)
+        return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
     
     def _set_baudrate(self):
         """
@@ -199,23 +312,89 @@ class Comport:
 
     def __getattr__(self, name):
         if name.startswith("get_"):
-            def zigbee_wrapper(portnum):
-                cmd = name[4:].upper() + f" P{portnum} "
-                if self.is_zigbee and self.addr64:
-                    print(f"[DEBUG] Sending Zigbee command: {cmd} to {self.addr64}")
-                    frame = self.build_zigbee_tx_frame(self.addr64, cmd)
-                    self.serialport.write(frame)
-                    self.serialport.flush()
-                    start_time = time.time()
-                    while time.time() - start_time < 2:
-                        frame = self.read_api_frame()
-                        parsed = self.parse_xbee_frame(frame)
-                        if parsed and parsed['type'] == 'RX':
-                            return parsed['data']
-                    return "--"
+            def zigbee_wrapper(portnum=None, broadcast=False):
+                """
+                Wrapper for get_* methods.
+                
+                Args:
+                    portnum: Port number (1-12). If None and broadcast=False, defaults to 1 for backward compatibility.
+                    broadcast: If True, send broadcast command without port number to get all 12 port responses.
+                              Returns list of responses instead of single response.
+                
+                Returns:
+                    Single response string if broadcast=False, or list of responses if broadcast=True
+                """
+                cmd_base = name[4:].upper()
+                
+                # Determine command format
+                if broadcast or portnum is None:
+                    # Broadcast command - no port number, device responds with all ports
+                    cmd = cmd_base + " "
+                    print(f"[DEBUG] Sending broadcast {cmd_base} command (expecting multiple responses)")
                 else:
-                    print(f"[DEBUG] Sending COM command: {cmd}")
-                    return self._send_command_get_response(command=cmd, default_response="--")
+                    # Single port command
+                    cmd = cmd_base + f" P{portnum} "
+                    print(f"[DEBUG] Sending {cmd_base} command for port {portnum}")
+                
+                if self.is_zigbee and self.addr64:
+                    if broadcast or portnum is None:
+                        # For Zigbee broadcast, we need to read multiple responses
+                        print(f"[DEBUG] Sending Zigbee broadcast command: {cmd} to {self.addr64}")
+                        frame = self.build_zigbee_tx_frame(self.addr64, cmd)
+                        self.serialport.write(frame)
+                        self.serialport.flush()
+                        
+                        responses = []
+                        start_time = time.time()
+                        last_response_time = None
+                        response_gap = 0.3
+                        
+                        while time.time() - start_time < 3.0 and len(responses) < 12:
+                            frame = self.read_api_frame()
+                            if frame:
+                                parsed = self.parse_xbee_frame(frame)
+                                if parsed and parsed['type'] == 'RX':
+                                    response = parsed['data']
+                                    if response and not self._invalid_data(response):
+                                        responses.append(response)
+                                        last_response_time = time.time()
+                                        print(f"[DEBUG] Collected Zigbee response {len(responses)}: {response[:50]}")
+                            
+                            # Check for response gap
+                            if last_response_time and (time.time() - last_response_time) >= response_gap:
+                                break
+                            
+                            time.sleep(0.01)
+                        
+                        return responses if broadcast else (responses[0] if responses else "--")
+                    else:
+                        # Single port Zigbee command
+                        print(f"[DEBUG] Sending Zigbee command: {cmd} to {self.addr64}")
+                        frame = self.build_zigbee_tx_frame(self.addr64, cmd)
+                        self.serialport.write(frame)
+                        self.serialport.flush()
+                        start_time = time.time()
+                        while time.time() - start_time < 2:
+                            frame = self.read_api_frame()
+                            parsed = self.parse_xbee_frame(frame)
+                            if parsed and parsed['type'] == 'RX':
+                                return parsed['data']
+                        return "--"
+                else:
+                    # Serial/Ethernet command
+                    if broadcast or (portnum is None and cmd_base in ['WGHT', 'W', 'SNM', 'SINF', 'SLC', 'UNIT', 'TYPE']):
+                        # For SC1200, broadcast commands return all port responses
+                        print(f"[DEBUG] Sending broadcast COM command: {cmd}")
+                        responses = self._send_command_get_multiple_responses(command=cmd, max_responses=12)
+                        return responses if broadcast else (responses[0] if responses else "--")
+                    else:
+                        # Single port command (backward compatibility)
+                        if portnum is None:
+                            portnum = 1  # Default to port 1 for backward compatibility
+                            cmd = cmd_base + f" P{portnum} "
+                        print(f"[DEBUG] Sending COM command: {cmd}")
+                        return self._send_command_get_response(command=cmd, default_response="--")
+            
             return zigbee_wrapper
         raise AttributeError(f"{name} not found")
 
