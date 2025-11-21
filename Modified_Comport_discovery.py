@@ -102,14 +102,15 @@ class Comport:
         else:
             raise SerialNotOpenException("Failed to read line: port not open")
 
-    def _read_multiple_responses(self, timeout_seconds=8.0, max_responses=12, response_gap=1.0) -> list:
+    def _read_multiple_responses(self, timeout_seconds=10.0, max_responses=12, response_gap=2.0) -> list:
         """
         Reads multiple responses from the serial port until timeout or max responses reached.
         
         Args:
-            timeout_seconds: Maximum time to wait for responses (default 5.0 seconds)
+            timeout_seconds: Maximum time to wait for responses (default 10.0 seconds)
             max_responses: Maximum number of responses to collect (default 12 for SC1200 ports)
-            response_gap: Time in seconds with no new responses before considering complete (default 0.5)
+            response_gap: Time in seconds with no new responses before considering complete (default 2.0)
+                          If None, only stops when max_responses reached or timeout
         
         Returns:
             List of response strings, excluding invalid responses
@@ -121,7 +122,7 @@ class Comport:
         start_time = time.time()
         last_response_time = None
         
-        print(f"[DEBUG] Starting multi-response read (timeout={timeout_seconds}s, max={max_responses})")
+        print(f"[DEBUG] Starting multi-response read (timeout={timeout_seconds}s, max={max_responses}, gap={response_gap})")
         
         # Save original timeout and set a reasonable timeout for reading
         original_timeout = self.serialport.timeout
@@ -132,22 +133,34 @@ class Comport:
                 current_time = time.time()
                 elapsed = current_time - start_time
                 
-                # Check if we've exceeded the timeout
-                if elapsed >= timeout_seconds:
-                    print(f"[DEBUG] Timeout reached after {elapsed:.2f}s, collected {len(responses)} responses")
+                # Check if we've reached max responses - prioritize this
+                if len(responses) >= max_responses:
+                    print(f"[DEBUG] Max responses ({max_responses}) reached - got all {len(responses)} responses")
                     break
                 
-                # Check if we've reached max responses
-                if len(responses) >= max_responses:
-                    print(f"[DEBUG] Max responses ({max_responses}) reached")
+                # Check if we've exceeded the timeout
+                if elapsed >= timeout_seconds:
+                    print(f"[DEBUG] Timeout reached after {elapsed:.2f}s, collected {len(responses)}/{max_responses} responses")
                     break
                 
                 # Check if we've had a gap with no new responses (adaptive completion)
-                if last_response_time is not None:
+                # Only use this if response_gap is not None and we haven't reached max yet
+                if response_gap is not None and last_response_time is not None:
                     gap = current_time - last_response_time
                     if gap >= response_gap:
-                        print(f"[DEBUG] Response gap of {gap:.2f}s detected, collected {len(responses)} responses")
-                        break
+                        # Only stop early if we've been waiting a long time AND we have some responses
+                        # But don't stop if we're close to getting all 12 - wait longer
+                        if len(responses) >= max_responses * 0.8:  # If we have at least 80% of responses, wait longer
+                            print(f"[DEBUG] Response gap of {gap:.2f}s detected but have {len(responses)}/{max_responses} responses, continuing to wait for all...")
+                            last_response_time = current_time  # Reset gap timer to give more time
+                        elif len(responses) < max_responses * 0.5:  # If we have less than 50%, stop early (likely no more coming)
+                            print(f"[DEBUG] Response gap of {gap:.2f}s detected with only {len(responses)}/{max_responses} responses, stopping")
+                            break
+                        else:
+                            # Between 50-80%, wait a bit more but not indefinitely
+                            if gap >= response_gap * 1.5:  # Wait 1.5x the gap time
+                                print(f"[DEBUG] Extended response gap of {gap:.2f}s detected, collected {len(responses)} responses")
+                                break
                 
                 # Try to read a line
                 try:
@@ -258,7 +271,8 @@ class Comport:
             print(f"[DEBUG] Reading responses from all ports...")
             # Increase timeout and response gap to ensure we get all 12 ports
             # Some ports may respond slower, so we need more time
-            return self._read_multiple_responses(timeout_seconds=8.0, max_responses=12, response_gap=1.0)
+            # Disable response gap check (set to None) - only stop when we have 12 responses or timeout
+            return self._read_multiple_responses(timeout_seconds=10.0, max_responses=12, response_gap=None)
         else:
             # For commands that don't support ALL, send to all 12 ports individually
             print(f"[DEBUG] Sending {command} command to all 12 ports...")
