@@ -387,31 +387,32 @@ class MainWindow(QMainWindow):
                         continue
                     
                     try:
-                        # For SNM command, parse the response format: SNM M\d+\.R\d+\.C\d+\.S\d+ \s?([\w-]*)
+                        # For SNM command, parse the firmware response format
+                        # Firmware sends: X02CID:LS-12345,P:01,ST:1,SID:sensor-name*XX
                         if command.upper() == 'SNM':
-                            # Check if response contains SNM format (may be wrapped in X02/X03)
-                            snm_match = re.search(r'SNM\s+M\d+\.R\d+\.C\d+\.S(\d+)\s+([\w-]*)', response)
-                            if snm_match:
-                                port_num = int(snm_match.group(1))
-                                scale_id = snm_match.group(2).strip()
-                                if scale_id and scale_id != "Invalid":
-                                    parsed = {'P': str(port_num), 'SID': scale_id}
+                            parsed, extras = self.parse_serial_message_as_dict(response)
+                            if parsed:
+                                # Extract port number
+                                port_num = None
+                                if 'P' in parsed:
+                                    port_num = int(parsed['P'])
+                                
+                                # Extract SID (Sensor ID) from parsed data
+                                if 'SID' in parsed:
+                                    scale_id = parsed['SID']
+                                    if scale_id and scale_id != "NA" and scale_id != "Invalid":
+                                        if port_num and (port_num in channels or not isinstance(channels, range)):
+                                            self.update_sensor_row(port, port_num, parsed, extras or [])
+                                            print(f"[{port}] Updated P{port_num} with SNM data: SID={scale_id}")
+                                    else:
+                                        print(f"[{port}] Skipped invalid SNM response for P{port_num}: SID='{scale_id}'")
+                                elif port_num:
+                                    # No SID in response - sensor might not be ready yet
                                     if port_num in channels or not isinstance(channels, range):
                                         self.update_sensor_row(port, port_num, parsed, extras or [])
-                                        print(f"[{port}] Updated P{port_num} with SNM data: SID={scale_id}")
-                                else:
-                                    print(f"[{port}] Skipped invalid SNM response for P{port_num}: '{scale_id}'")
+                                        print(f"[{port}] Updated P{port_num} with {command} data (no SID - sensor not ready)")
                             else:
-                                # SNM response not in expected format - log for debugging
-                                print(f"[{port}] SNM response format not recognized (expected 'SNM M...R...C...S... ID'): {response[:100]}")
-                                # Try standard parsing as fallback
-                                parsed, extras = self.parse_serial_message_as_dict(response)
-                                if parsed and 'P' in parsed:
-                                    port_num = int(parsed['P'])
-                                    if port_num in channels or not isinstance(channels, range):
-                                        # Don't update SNM column if we don't have SID
-                                        self.update_sensor_row(port, port_num, parsed, extras)
-                                        print(f"[{port}] Updated P{port_num} with {command} data (no SID found)")
+                                print(f"[{port}] Failed to parse SNM response: {response[:100]}")
                         else:
                             # For other commands, use standard parsing
                             parsed, extras = self.parse_serial_message_as_dict(response)

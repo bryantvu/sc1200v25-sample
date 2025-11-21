@@ -244,32 +244,54 @@ class Comport:
             self.serialport.reset_input_buffer()
             time.sleep(0.05)  # Give buffer time to clear
         
-        # Commands that support <ALL> format: SNM, WGHT, SINF, TYPE, SATT, TARE, WLB, RAW, UNIT, CPTY, SLC
+        # According to firmware source (CommonFuncs.c line 298), commands support "ALL" format (without brackets)
+        # Commands that support ALL: SNM, WGHT, SINF, TYPE, SATT, TARE, WLB, RAW, UNIT, CPTY, SLC
         all_supported_commands = ['SNM', 'WGHT', 'SINF', 'TYPE', 'SATT', 'TARE', 'WLB', 'RAW', 'UNIT', 'CPTY', 'SLC']
         
         if command.upper() in all_supported_commands:
-            # Try using <ALL> format first - this should return all ports in one command
-            print(f"[DEBUG] Sending {command} <ALL> command (expecting multiple responses)...")
-            all_command = f"{command} <ALL>"
+            # Use ALL format (without angle brackets) - firmware expects "SNM ALL" not "SNM <ALL>"
+            print(f"[DEBUG] Sending {command} ALL command (expecting multiple responses)...")
+            all_command = f"{command} ALL"
             self._send_command(all_command)
             # Wait for device to process and send all responses
             time.sleep(0.5)
             print(f"[DEBUG] Reading responses from all ports...")
             return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
         else:
-            # For commands that don't support <ALL>, send to all 12 ports in quick succession
+            # For commands that don't support ALL, send to all 12 ports individually
             print(f"[DEBUG] Sending {command} command to all 12 ports...")
+            responses = []
+            
             for port_num in range(1, 13):
                 port_command = f"{command} P{port_num} "
                 self._send_command(port_command)
-                time.sleep(0.3)  # Increased delay between commands to allow device to process each command
+                time.sleep(0.1)  # Small delay between commands
+                
+                # Try to read response for this port
+                try:
+                    original_timeout = self.serialport.timeout
+                    self.serialport.timeout = 0.5
+                    line = self.serialport.readline()
+                    self.serialport.timeout = original_timeout
+                    
+                    if line:
+                        try:
+                            response = line.decode("utf-8", errors='ignore').strip()
+                            if response and len(response) > 1 and response not in INVALID_DATA:
+                                responses.append(response)
+                                print(f"[DEBUG] Collected response for P{port_num}: {response[:60]}")
+                        except UnicodeDecodeError:
+                            pass
+                except Exception as e:
+                    print(f"[DEBUG] Error reading response for P{port_num}: {e}")
             
-            # Wait a bit for device to finish processing all commands before reading responses
-            time.sleep(0.3)
+            # Also do a final read to catch any delayed responses
+            print(f"[DEBUG] Reading any remaining responses...")
+            remaining_responses = self._read_multiple_responses(timeout_seconds=2.0, max_responses=12-len(responses))
+            responses.extend(remaining_responses)
             
-            # Now read all responses that come back
-            print(f"[DEBUG] Reading responses from all ports...")
-            return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
+            print(f"[DEBUG] Total responses collected: {len(responses)}")
+            return responses
     
     def _set_baudrate(self):
         """
