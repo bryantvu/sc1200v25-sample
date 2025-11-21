@@ -102,7 +102,7 @@ class Comport:
         else:
             raise SerialNotOpenException("Failed to read line: port not open")
 
-    def _read_multiple_responses(self, timeout_seconds=5.0, max_responses=12, response_gap=0.5) -> list:
+    def _read_multiple_responses(self, timeout_seconds=8.0, max_responses=12, response_gap=1.0) -> list:
         """
         Reads multiple responses from the serial port until timeout or max responses reached.
         
@@ -256,7 +256,9 @@ class Comport:
             # Wait for device to process and send all responses
             time.sleep(0.5)
             print(f"[DEBUG] Reading responses from all ports...")
-            return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
+            # Increase timeout and response gap to ensure we get all 12 ports
+            # Some ports may respond slower, so we need more time
+            return self._read_multiple_responses(timeout_seconds=8.0, max_responses=12, response_gap=1.0)
         else:
             # For commands that don't support ALL, send to all 12 ports individually
             print(f"[DEBUG] Sending {command} command to all 12 ports...")
