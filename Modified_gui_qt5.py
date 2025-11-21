@@ -392,6 +392,10 @@ class MainWindow(QMainWindow):
                             port_num = int(parsed['P'])
                             # Only update if this port is in the active channels
                             if port_num in channels or not isinstance(channels, range):
+                                # For SNM command, map CID to SID if present (some firmware versions use CID instead of SID)
+                                if command.upper() == 'SNM' and 'CID' in parsed and 'SID' not in parsed:
+                                    parsed['SID'] = parsed['CID']
+                                    print(f"[{port}] Mapped CID to SID for SNM: {parsed['CID']}")
                                 self.update_sensor_row(port, port_num, parsed, extras)
                                 print(f"[{port}] Updated P{port_num} with {command} data")
                         else:
