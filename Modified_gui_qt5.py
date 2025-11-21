@@ -387,17 +387,40 @@ class MainWindow(QMainWindow):
                         continue
                     
                     try:
-                        parsed, extras = self.parse_serial_message_as_dict(response)
-                        if parsed and 'P' in parsed:
-                            port_num = int(parsed['P'])
-                            # Only update if this port is in the active channels
-                            if port_num in channels or not isinstance(channels, range):
-                                # For SNM command, map CID to SID if present (some firmware versions use CID instead of SID)
-                                if command.upper() == 'SNM' and 'CID' in parsed and 'SID' not in parsed:
-                                    parsed['SID'] = parsed['CID']
-                                    print(f"[{port}] Mapped CID to SID for SNM: {parsed['CID']}")
-                                self.update_sensor_row(port, port_num, parsed, extras)
-                                print(f"[{port}] Updated P{port_num} with {command} data")
+                        # For SNM command, parse the response format: SNM M\d+\.R\d+\.C\d+\.S\d+ \s?([\w-]*)
+                        if command.upper() == 'SNM':
+                            # Check if response contains SNM format (may be wrapped in X02/X03)
+                            snm_match = re.search(r'SNM\s+M\d+\.R\d+\.C\d+\.S(\d+)\s+([\w-]*)', response)
+                            if snm_match:
+                                port_num = int(snm_match.group(1))
+                                scale_id = snm_match.group(2).strip()
+                                if scale_id and scale_id != "Invalid":
+                                    parsed = {'P': str(port_num), 'SID': scale_id}
+                                    if port_num in channels or not isinstance(channels, range):
+                                        self.update_sensor_row(port, port_num, parsed, extras or [])
+                                        print(f"[{port}] Updated P{port_num} with SNM data: SID={scale_id}")
+                                else:
+                                    print(f"[{port}] Skipped invalid SNM response for P{port_num}: '{scale_id}'")
+                            else:
+                                # SNM response not in expected format - log for debugging
+                                print(f"[{port}] SNM response format not recognized (expected 'SNM M...R...C...S... ID'): {response[:100]}")
+                                # Try standard parsing as fallback
+                                parsed, extras = self.parse_serial_message_as_dict(response)
+                                if parsed and 'P' in parsed:
+                                    port_num = int(parsed['P'])
+                                    if port_num in channels or not isinstance(channels, range):
+                                        # Don't update SNM column if we don't have SID
+                                        self.update_sensor_row(port, port_num, parsed, extras)
+                                        print(f"[{port}] Updated P{port_num} with {command} data (no SID found)")
+                        else:
+                            # For other commands, use standard parsing
+                            parsed, extras = self.parse_serial_message_as_dict(response)
+                            if parsed and 'P' in parsed:
+                                port_num = int(parsed['P'])
+                                # Only update if this port is in the active channels
+                                if port_num in channels or not isinstance(channels, range):
+                                    self.update_sensor_row(port, port_num, parsed, extras)
+                                    print(f"[{port}] Updated P{port_num} with {command} data")
                         else:
                             # Try to extract port number from response string if not in parsed dict
                             # Some commands might have port info in the response string
