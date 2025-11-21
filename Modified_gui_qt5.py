@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, QLabel,
-    QGridLayout, QScrollArea, QHBoxLayout
+    QGridLayout, QScrollArea, QHBoxLayout, QTabWidget
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from Modified_Comport_discovery import Comport
@@ -134,20 +134,18 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self.toggle_connection)
         self.layout.addWidget(self.start_btn)
 
-        self.scroll_area = QScrollArea()
-        self.scroll_widget = QWidget()
-        self.scroll_layout = QGridLayout()
-        self.scroll_widget.setLayout(self.scroll_layout)
-        self.scroll_area.setWidget(self.scroll_widget)
-        self.scroll_area.setWidgetResizable(True)
-        self.layout.addWidget(self.scroll_area)
+        # Create tab widget to display multiple SC1200 devices
+        self.tab_widget = QTabWidget()
+        self.layout.addWidget(self.tab_widget)
 
-        self.next_row = 0
+        # Data structures for tracking devices and tabs
         self.sensor_threads = []
-        self.sensor_cells = {}  # (port, ch) -> [QLabel, QLabel, ...]
         self.sensor_objects = {}  # port -> Comport instance
         self.connected_ports = []
         self.active_channels = {}  # port -> [ch1, ch2, ...]
+        
+        # Device tabs: port -> {scroll_area, scroll_widget, scroll_layout, next_row, sensor_cells, cid}
+        self.device_tabs = {}
     
     
     def toggle_connection(self):
@@ -197,8 +195,47 @@ class MainWindow(QMainWindow):
     '''
 
     def add_sensor_block(self, port, cid, comport_obj):
+        # Get or create tab for this device
+        if port not in self.device_tabs:
+            # Create a new tab for this device
+            tab_widget = QWidget()
+            tab_scroll_area = QScrollArea()
+            tab_scroll_widget = QWidget()
+            tab_scroll_layout = QGridLayout()
+            tab_scroll_widget.setLayout(tab_scroll_layout)
+            tab_scroll_area.setWidget(tab_scroll_widget)
+            tab_scroll_area.setWidgetResizable(True)
+            
+            tab_layout = QVBoxLayout()
+            tab_layout.addWidget(tab_scroll_area)
+            tab_widget.setLayout(tab_layout)
+            
+            # Create tab label (use port and CID if available)
+            tab_label = f"{port}"
+            if cid and cid != "--":
+                tab_label = f"{port} ({cid})"
+            
+            # Add tab to tab widget
+            tab_index = self.tab_widget.addTab(tab_widget, tab_label)
+            
+            # Store tab info
+            self.device_tabs[port] = {
+                'tab_index': tab_index,
+                'scroll_area': tab_scroll_area,
+                'scroll_widget': tab_scroll_widget,
+                'scroll_layout': tab_scroll_layout,
+                'next_row': 0,
+                'sensor_cells': {},  # (port, ch) -> [QLabel, QLabel, ...]
+                'cid': cid
+            }
+            print(f"[INFO] Created tab for device {port}: {tab_label}")
+        
+        # Get tab info for this device
+        tab_info = self.device_tabs[port]
+        scroll_layout = tab_info['scroll_layout']
+        row_start = tab_info['next_row']
+        
         active_channels = []
-        row_start = self.next_row
         try:
             get_snm = getattr(comport_obj, "get_snm", None)
         except AttributeError:
@@ -288,12 +325,12 @@ class MainWindow(QMainWindow):
             # You can return here OR still show headers with no channels if you prefer
             cid_label = QLabel(f"CID: {cid}")
             cid_label.setStyleSheet("background-color: #eee")
-            self.scroll_layout.addWidget(cid_label, row_start + 1, 0, 1, 10)
+            scroll_layout.addWidget(cid_label, row_start + 1, 0, 1, 10)
             
             nosensor_label = QLabel("NO SENSORS ATTACHED")
             nosensor_label.setStyleSheet("background-color: #eee")
-            self.scroll_layout.addWidget(nosensor_label, row_start + 1, 4, 1, 10)
-            self.next_row = row_start + 2 + len(active_channels)
+            scroll_layout.addWidget(nosensor_label, row_start + 1, 4, 1, 10)
+            tab_info['next_row'] = row_start + 2 + len(active_channels)
             return
 
         # Remember for later commands
@@ -307,7 +344,7 @@ class MainWindow(QMainWindow):
         else:
             port_label = QLabel(f"Serial Port: {port}")
         port_label.setStyleSheet("font-weight: bold; background-color: #ddd")
-        self.scroll_layout.addWidget(port_label, row_start, 0, 1, 10)
+        scroll_layout.addWidget(port_label, row_start, 0, 1, 10)
         '''
         if hasattr(comport_obj, 'ni'):
             cid_label = QLabel(f"Node ID: {comport_obj.ni}")
@@ -315,48 +352,48 @@ class MainWindow(QMainWindow):
         '''
         cid_label = QLabel(f"CID: {cid}")
         cid_label.setStyleSheet("background-color: #eee")
-        self.scroll_layout.addWidget(cid_label, row_start + 1, 0, 1, 10)
+        scroll_layout.addWidget(cid_label, row_start + 1, 0, 1, 10)
 
         headings = ["SINF", "SNM", "Status", "Unit", "Type", "LC", "Weight", "WeightLB", "RAW", "Tare"]
         for col, heading in enumerate(headings):
             label = QLabel(heading)
             label.setStyleSheet("font-weight: bold; background-color: lightblue")
             label.setAlignment(Qt.AlignCenter)
-            self.scroll_layout.addWidget(label, row_start + 2, col)
+            scroll_layout.addWidget(label, row_start + 2, col)
 
         self.sensor_objects[port] = comport_obj
         '''
         for ch in range(1, 13):
             port_label = QLabel(f"P{ch}")
             port_label.setAlignment(Qt.AlignCenter)
-            self.scroll_layout.addWidget(port_label, row_start + 2 + ch, 0)
+            scroll_layout.addWidget(port_label, row_start + 2 + ch, 0)
             row_cells = []
             for col in range(1, 10):
                 cell = QLabel(" ")
                 cell.setStyleSheet("background-color: white; border: 1px solid #ccc")
-                self.scroll_layout.addWidget(cell, row_start + 2 + ch, col)
+                scroll_layout.addWidget(cell, row_start + 2 + ch, col)
                 row_cells.append(cell)
-            self.sensor_cells[(port, ch)] = row_cells
+            tab_info['sensor_cells'][(port, ch)] = row_cells
 
-        self.next_row += 15
+        tab_info['next_row'] += 15
         '''
         for idx, ch in enumerate(active_channels):
             row_index = row_start + 3 + idx
 
             port_label = QLabel(f"P{ch}")
             port_label.setAlignment(Qt.AlignCenter)
-            self.scroll_layout.addWidget(port_label, row_index, 0)
+            scroll_layout.addWidget(port_label, row_index, 0)
 
             row_cells = []
             for col in range(1, 10):
                 cell = QLabel(" ")
                 cell.setStyleSheet("background-color: white; border: 1px solid #ccc")
-                self.scroll_layout.addWidget(cell, row_index, col)
+                scroll_layout.addWidget(cell, row_index, col)
                 row_cells.append(cell)
-            self.sensor_cells[(port, ch)] = row_cells
+            tab_info['sensor_cells'][(port, ch)] = row_cells
 
         # Next block starts after all active rows
-        self.next_row = row_start + 3 + len(active_channels)
+        tab_info['next_row'] = row_start + 3 + len(active_channels)
 
     def send_command(self, command):
         print(f"[COMMAND] {command} triggered")
@@ -443,7 +480,13 @@ class MainWindow(QMainWindow):
                 traceback.print_exc()
 
     def update_sensor_row(self, port, ch, data, extras):
-        row_cells = self.sensor_cells.get((port, ch))
+        # Get the correct tab's sensor cells for this device
+        if port not in self.device_tabs:
+            print(f"[WARNING] No tab found for port {port}, cannot update sensor row")
+            return
+        
+        tab_info = self.device_tabs[port]
+        row_cells = tab_info['sensor_cells'].get((port, ch))
         if not row_cells:
             return
         keys = ['SID', 'ST', 'U', 'TYPE', 'LC', 'W', 'WLB', 'R']
@@ -543,10 +586,11 @@ class MainWindow(QMainWindow):
                 print(f"Error closing {port}: {e}")
         self.connected_ports.clear()
         self.sensor_objects.clear()
-        self.sensor_cells.clear()
-        self.scroll_layout = QGridLayout()
-        self.scroll_widget.setLayout(self.scroll_layout)
-        self.next_row = 0
+        
+        # Clear all tabs
+        self.tab_widget.clear()
+        self.device_tabs.clear()
+        self.active_channels.clear()
 
 
 
