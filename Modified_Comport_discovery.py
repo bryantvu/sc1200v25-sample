@@ -249,10 +249,10 @@ class Comport:
         for port_num in range(1, 13):
             port_command = f"{command} P{port_num} "
             self._send_command(port_command)
-            time.sleep(0.02)  # Small delay between commands to avoid overwhelming the device
+            time.sleep(0.15)  # Increased delay between commands to allow device to process each command
         
-        # Wait a bit for device to start processing commands before reading responses
-        time.sleep(0.1)
+        # Wait a bit for device to finish processing all commands before reading responses
+        time.sleep(0.2)
         
         # Now read all responses that come back
         print(f"[DEBUG] Reading responses from all ports...")
