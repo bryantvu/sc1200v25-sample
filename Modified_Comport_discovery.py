@@ -102,7 +102,7 @@ class Comport:
         else:
             raise SerialNotOpenException("Failed to read line: port not open")
 
-    def _read_multiple_responses(self, timeout_seconds=3.0, max_responses=12, response_gap=0.3) -> list:
+    def _read_multiple_responses(self, timeout_seconds=5.0, max_responses=12, response_gap=0.5) -> list:
         """
         Reads multiple responses from the serial port until timeout or max responses reached.
         
@@ -222,12 +222,13 @@ class Comport:
                 return default_response
             return response
 
-    def _send_command_get_multiple_responses(self, command: str, max_responses: int = 12, timeout_seconds: float = 3.0) -> list:
+    def _send_command_get_multiple_responses(self, command: str, max_responses: int = 12, timeout_seconds: float = 5.0) -> list:
         """
-        Sends a command and gets all responses (for SC1200 multi-port commands).
+        Sends a command to all ports and gets all responses (for SC1200 multi-port commands).
+        For SC1200, commands must include port numbers, so we send to all 12 ports in quick succession.
         
         Args:
-            command: Command string to send
+            command: Command base (e.g., "SNM", "WGHT", "SINF") - port numbers will be added
             max_responses: Maximum number of responses to read (default 12 for SC1200 ports)
             timeout_seconds: Maximum time to wait for responses
         
@@ -238,7 +239,16 @@ class Comport:
             self.serialport.reset_input_buffer()
             time.sleep(0.01)
         
-        self._send_command(command)
+        # SC1200 requires port numbers in commands, so send to all 12 ports in quick succession
+        # Send all commands first without waiting for responses
+        print(f"[DEBUG] Sending {command} command to all 12 ports...")
+        for port_num in range(1, 13):
+            port_command = f"{command} P{port_num} "
+            self._send_command(port_command)
+            time.sleep(0.01)  # Small delay between commands to avoid overwhelming the device
+        
+        # Now read all responses that come back
+        print(f"[DEBUG] Reading responses from all ports...")
         return self._read_multiple_responses(timeout_seconds=timeout_seconds, max_responses=max_responses)
     
     def _set_baudrate(self):
@@ -383,15 +393,15 @@ class Comport:
                 else:
                     # Serial/Ethernet command
                     if broadcast or (portnum is None and cmd_base in ['WGHT', 'W', 'SNM', 'SINF', 'SLC', 'UNIT', 'TYPE']):
-                        # For SC1200, broadcast commands return all port responses
-                        print(f"[DEBUG] Sending broadcast COM command: {cmd}")
-                        responses = self._send_command_get_multiple_responses(command=cmd, max_responses=12)
+                        # For SC1200, send command to all 12 ports and collect all responses
+                        print(f"[DEBUG] Sending {cmd_base} command to all ports (multi-response mode)")
+                        responses = self._send_command_get_multiple_responses(command=cmd_base, max_responses=12)
                         return responses if broadcast else (responses[0] if responses else "--")
                     else:
                         # Single port command (backward compatibility)
                         if portnum is None:
                             portnum = 1  # Default to port 1 for backward compatibility
-                            cmd = cmd_base + f" P{portnum} "
+                        cmd = cmd_base + f" P{portnum} "
                         print(f"[DEBUG] Sending COM command: {cmd}")
                         return self._send_command_get_response(command=cmd, default_response="--")
             
